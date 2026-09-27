@@ -29,10 +29,6 @@ ShhhToshi is a community memecoin on the TON blockchain.
 
 **Contract address:** `EQAesdqwmBcSUhfMEbNs5J3yxJCGEZD-82lu88Q2TL9kUpyW`
 
-*(Always verify the contract address independently before trading. This
-bot does not guarantee the safety or performance of any token, including
-ShhhToshi.)*
-
 ## Stack
 - Python 3.11+, aiogram 3.x
 - SQLAlchemy + SQLite (local dev) / PostgreSQL (production)
