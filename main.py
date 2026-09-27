@@ -12,6 +12,7 @@ import balance_handlers
 import trade_handlers
 import settings_handlers
 import admin_handlers
+from deposit_watcher import run_deposit_watcher
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,7 +34,12 @@ async def main():
     dp.include_router(admin_handlers.router)
 
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+
+    watcher_task = asyncio.create_task(run_deposit_watcher(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        watcher_task.cancel()
 
 
 if __name__ == "__main__":

@@ -17,12 +17,13 @@ def main_menu_kb(has_wallet: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="💰 Balance", callback_data="menu:balance"),
-            InlineKeyboardButton(text="🔁 Swap", callback_data="menu:swap"),
+            InlineKeyboardButton(text="📥 Deposit", callback_data="menu:deposit"),
         ],
         [
             InlineKeyboardButton(text="🟢 Buy", callback_data="menu:buy"),
             InlineKeyboardButton(text="🔴 Sell", callback_data="menu:sell"),
         ],
+        [InlineKeyboardButton(text="🔁 Swap", callback_data="menu:swap")],
         [InlineKeyboardButton(text="⚙️ Settings", callback_data="menu:settings")],
     ])
 

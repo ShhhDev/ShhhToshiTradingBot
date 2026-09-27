@@ -83,6 +83,22 @@ class FeeConfig(Base):
     updated_by_admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
+class DepositSnapshot(Base):
+    """
+    Last-seen balance per (wallet, asset) so the deposit watcher can diff
+    fresh reads against this and detect newly-arrived funds. "TON" is used
+    as the asset key for native TON; jettons are keyed by contract address.
+    """
+    __tablename__ = "deposit_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"), index=True)
+    asset: Mapped[str] = mapped_column(String(128))  # "TON" or jetton contract address
+    symbol: Mapped[str] = mapped_column(String(32), default="TON")
+    last_balance: Mapped[float] = mapped_column(Numeric(38, 9), default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class AdminAuditLog(Base):
     __tablename__ = "admin_audit_log"
 

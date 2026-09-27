@@ -12,6 +12,40 @@ from start_handlers import main_menu_kb
 router = Router()
 
 
+@router.callback_query(F.data == "menu:deposit")
+async def show_deposit(callback: CallbackQuery):
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+        user = result.scalar_one_or_none()
+        wallet = None
+        if user:
+            wallet_result = await session.execute(
+                select(Wallet).where(Wallet.user_id == user.id, Wallet.is_primary == True)  # noqa: E712
+            )
+            wallet = wallet_result.scalar_one_or_none()
+
+    if not wallet:
+        await callback.answer("No wallet found. Create one first.", show_alert=True)
+        return
+
+    text = (
+        "📥 <b>Deposit</b>\n\n"
+        "Send <b>TON</b> or any <b>jetton on the TON network</b> to this address:\n\n"
+        f"<code>{wallet.address}</code>\n\n"
+        "Tap the address above to copy it.\n\n"
+        "⚠️ Only send assets on the <b>TON blockchain</b>. Anything sent on another "
+        "network to this address will be lost permanently.\n\n"
+        "You'll get a message here as soon as a deposit is detected, with buttons "
+        "to buy more or sell right away."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Check balance now", callback_data="menu:balance")],
+        [InlineKeyboardButton(text="⬅️ Back", callback_data="menu:home")],
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
 class ImportWallet(StatesGroup):
     waiting_for_mnemonic = State()
 
