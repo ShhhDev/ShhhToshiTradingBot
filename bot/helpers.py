@@ -56,12 +56,6 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def remove_reply_kb() -> ReplyKeyboardRemove:
-    """Only used if we ever need to clear the menu (we normally don't)."""
-    from aiogram.types import ReplyKeyboardRemove
-    return ReplyKeyboardRemove(remove_keyboard=True)
-
-
 def onboarding_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✨ Create Wallet", callback_data="wallet:create")],
