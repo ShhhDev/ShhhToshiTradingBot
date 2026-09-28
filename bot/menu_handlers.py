@@ -1,6 +1,9 @@
 """
-Taps on the persistent bottom menu.
-Matches several emoji/text variants so an older keyboard still works.
+Taps on the persistent bottom menu
+(💰 Balance / 📥 Deposit / 🔁 Swap / ⚙️ Settings).
+
+Buy & Sell are NOT on this keyboard — they appear as inline buttons
+on token cards (and after pasting a CA).
 """
 
 from aiogram import Router, F
@@ -12,8 +15,8 @@ import deposit_handlers
 import settings_handlers
 import trade_handlers
 from helpers import (
-    MENU_BALANCE_ALIASES, MENU_DEPOSIT_ALIASES, MENU_BUY_ALIASES,
-    MENU_SELL_ALIASES, MENU_SWAP_ALIASES, MENU_SETTINGS_ALIASES,
+    MENU_BALANCE_ALIASES, MENU_DEPOSIT_ALIASES,
+    MENU_SWAP_ALIASES, MENU_SETTINGS_ALIASES,
 )
 
 router = Router()
@@ -29,18 +32,6 @@ async def menu_balance(message: Message, state: FSMContext):
 async def menu_deposit(message: Message, state: FSMContext):
     await state.clear()
     await deposit_handlers.send_deposit(message)
-
-
-@router.message(F.text.in_(MENU_BUY_ALIASES))
-async def menu_buy(message: Message, state: FSMContext):
-    await state.clear()
-    await trade_handlers.start_buy(message, state)
-
-
-@router.message(F.text.in_(MENU_SELL_ALIASES))
-async def menu_sell(message: Message, state: FSMContext):
-    await state.clear()
-    await trade_handlers.start_sell(message, state)
 
 
 @router.message(F.text.in_(MENU_SWAP_ALIASES))

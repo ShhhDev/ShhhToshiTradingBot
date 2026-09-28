@@ -20,41 +20,34 @@ logger = logging.getLogger(__name__)
 
 MENU_BALANCE = "💰 Balance"
 MENU_DEPOSIT = "📥 Deposit"
-MENU_BUY = "🟢 Buy"
-MENU_SELL = "🔴 Sell"
 MENU_SWAP = "🔁 Swap"
 MENU_SETTINGS = "⚙️ Settings"
 
-# Accept common variants already sitting on users' reply keyboards
+# Accept common variants already on users' reply keyboards
 MENU_BALANCE_ALIASES = {MENU_BALANCE, "Balance", "💰Balance"}
 MENU_DEPOSIT_ALIASES = {MENU_DEPOSIT, "Deposit", "📥Deposit"}
-MENU_BUY_ALIASES = {MENU_BUY, "Buy", "🟢Buy", "🟢  Buy"}
-MENU_SELL_ALIASES = {MENU_SELL, "Sell", "🔴Sell", "🔴  Sell"}
 MENU_SWAP_ALIASES = {MENU_SWAP, "🔄 Swap", "Swap", "🔁Swap", "🔄Swap"}
 MENU_SETTINGS_ALIASES = {MENU_SETTINGS, "Settings", "⚙️Settings"}
 
 MENU_TEXTS = (
-    MENU_BALANCE_ALIASES | MENU_DEPOSIT_ALIASES | MENU_BUY_ALIASES
-    | MENU_SELL_ALIASES | MENU_SWAP_ALIASES | MENU_SETTINGS_ALIASES
+    MENU_BALANCE_ALIASES | MENU_DEPOSIT_ALIASES
+    | MENU_SWAP_ALIASES | MENU_SETTINGS_ALIASES
 )
 
 
 def main_reply_kb() -> ReplyKeyboardMarkup:
-    """Bottom menu — always visible. System keyboard only opens when the user
-    taps the text field (to type an amount or paste a CA)."""
+    """Bottom menu — only Balance / Deposit / Swap / Settings.
+    Buy & Sell stay as inline buttons on token cards."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_DEPOSIT)],
-            [KeyboardButton(text=MENU_BUY), KeyboardButton(text=MENU_SELL)],
-            [KeyboardButton(text=MENU_SWAP)],
-            [KeyboardButton(text=MENU_SETTINGS)],
+            [KeyboardButton(text=MENU_SWAP), KeyboardButton(text=MENU_SETTINGS)],
         ],
         resize_keyboard=True,
         is_persistent=True,
         one_time_keyboard=False,
         input_field_placeholder="Paste a token CA or type an amount…",
     )
-
 
 
 # Back-compat alias (some older files import this name)

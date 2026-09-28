@@ -71,9 +71,13 @@ async def _tonapi_get(path: str, params: dict | None = None) -> dict | None:
     exist (404/400 - e.g. a brand-new wallet that has never been active, or a
     bad token address). Retries on 429 / 5xx / network errors, then raises
     TonApiError.
+
+    If TON_API_KEY is set but invalid (401/403), retries once without auth so
+    the bot still works on the public rate limit.
     """
     headers = {"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {}
     last_error = "unknown error"
+    auth_dropped = False
 
     async with httpx.AsyncClient(timeout=15) as client:
         for attempt in range(3):
@@ -87,7 +91,19 @@ async def _tonapi_get(path: str, params: dict | None = None) -> dict | None:
             if r.status_code in (400, 404):
                 return None
             if r.status_code in (401, 403):
-                raise TonApiError("TonAPI rejected the request - check the TON_API_KEY variable.")
+                if headers and not auth_dropped:
+                    # Bad / expired key — fall back to unauthenticated public API
+                    logger.warning(
+                        "TonAPI 401/403 with TON_API_KEY — retrying without auth. "
+                        "Fix or remove TON_API_KEY in Railway variables."
+                    )
+                    headers = {}
+                    auth_dropped = True
+                    continue
+                raise TonApiError(
+                    "TonAPI rejected the request. Set a valid TON_API_KEY "
+                    "from https://tonconsole.com/ or leave it empty."
+                )
             if r.status_code == 429 or r.status_code >= 500:
                 last_error = f"TonAPI busy (HTTP {r.status_code})"
                 await asyncio.sleep(1.2 * (attempt + 1))
