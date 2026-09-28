@@ -211,6 +211,61 @@ async def close_message(callback: CallbackQuery):
 
 # ---- 2. swap: pick FROM, pick TO ------------------------------------------------------
 
+
+async def start_buy(event, state: FSMContext):
+    """🟢 Buy — spend TON for a token. User pastes a CA or picks from holdings later."""
+    wallet = await require_wallet(event)
+    if not wallet:
+        return
+    await state.clear()
+    await state.set_state(TradeFlow.waiting_for_ca)
+    await state.update_data(buy_mode=True, from_token=TON)
+    kb = InlineKeyboardMarkup(inline_keyboard=[_cancel_row()])
+    await reply_or_edit(
+        event,
+        "🟢 <b>Buy</b>\n\n"
+        "Paste the <b>contract address (CA)</b> of the token you want to buy with TON.\n\n"
+        "Or open 💰 Balance / paste a CA anytime for the token card with Buy.",
+        kb,
+    )
+
+
+async def start_sell(event, state: FSMContext):
+    """🔴 Sell — pick a held token to sell for TON."""
+    wallet = await require_wallet(event)
+    if not wallet:
+        return
+    await state.clear()
+    if isinstance(event, CallbackQuery):
+        await event.answer()
+
+    try:
+        holdings = await ton_client.get_jetton_holdings(wallet.address)
+    except Exception as e:
+        await _fail(event, e)
+        return
+
+    if not holdings:
+        await reply_or_edit(
+            event,
+            "🔴 <b>Sell</b>\n\nYou don't hold any jettons yet.\n"
+            "Deposit tokens or buy some first, then tap 🔴 Sell again.",
+            InlineKeyboardMarkup(inline_keyboard=[_cancel_row()]),
+        )
+        return
+
+    buttons = [
+        InlineKeyboardButton(text=f"🪙 {h['symbol'][:14]}", callback_data=f"hs:{h['contract']}")
+        for h in holdings[:20]
+    ]
+    rows = _grid(buttons) + [_cancel_row()]
+    await reply_or_edit(
+        event,
+        "🔴 <b>Sell</b>\n\nChoose the token you want to sell for TON:",
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
 async def start_swap(event, state: FSMContext):
     """🔁 Swap menu button / deposit-notification button."""
     wallet = await require_wallet(event)

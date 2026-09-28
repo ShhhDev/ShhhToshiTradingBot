@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 import httpx
 from tonsdk.boc import Builder, Cell
@@ -237,7 +238,7 @@ async def _get_seqno(address: str) -> int:
     base = "https://tonapi.io/v2" if config.TON_NETWORK == "mainnet" else "https://testnet.tonapi.io/v2"
     headers = {"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {}
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(f"{base}/wallet/{address}/seqno", headers=headers)
+        r = await client.get(f"{base}/wallet/{quote(address.strip(), safe='')}/seqno", headers=headers)
         if r.status_code in (400, 404):
             return 0
         r.raise_for_status()
@@ -252,7 +253,7 @@ async def _get_jetton_wallet_address(owner: str, jetton_master: str) -> str:
     friendly_master = addr_utils.to_friendly(jetton_master) or jetton_master
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(
-            f"{base}/accounts/{owner}/jettons/{friendly_master}",
+            f"{base}/accounts/{quote(owner.strip(), safe='')}/jettons/{quote(friendly_master.strip(), safe='')}",
             headers=headers,
         )
         if r.status_code in (400, 404):

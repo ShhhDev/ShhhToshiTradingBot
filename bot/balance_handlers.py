@@ -1,68 +1,126 @@
+import logging
+
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import select
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from db import async_session, User, Wallet
 import ton_client
+from helpers import (
+    edit, esc, fmt_amount, fmt_usd, is_admin, require_wallet,
+)
 
+logger = logging.getLogger(__name__)
 router = Router()
 
-
-async def _get_primary_wallet(telegram_id: int) -> Wallet | None:
-    async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            return None
-        wallet_result = await session.execute(
-            select(Wallet).where(Wallet.user_id == user.id, Wallet.is_primary == True)  # noqa: E712
-        )
-        return wallet_result.scalar_one_or_none()
+MAX_TOKENS_SHOWN = 15
 
 
-@router.callback_query(F.data == "menu:balance")
-async def show_balance(callback: CallbackQuery):
-    wallet = await _get_primary_wallet(callback.from_user.id)
-    if not wallet:
-        await callback.answer("No wallet found. Create one first.", show_alert=True)
-        return
-
-    await callback.answer("Fetching balances…")
-
+async def build_balance(wallet) -> tuple[str, InlineKeyboardMarkup]:
+    """Fetches live data and renders the Balance screen. Raises on provider failure."""
     ton_balance = await ton_client.get_ton_balance(wallet.address)
     holdings = await ton_client.get_jetton_holdings(wallet.address)
+    try:
+        prices = await ton_client.get_usd_prices([h["contract"] for h in holdings])
+    except Exception:
+        prices = {}
 
-    # NOTE: USD/TON pricing for "total balance" needs a price feed
-    # (e.g. STON.fi pool prices or a CoinGecko-style aggregator) — wire in
-    # services/pricing.py. Left as TON-denominated only for now.
+    ton_price = prices.get("TON")
+    ton_value = ton_balance * ton_price if ton_price else None
+    for h in holdings:
+        price = prices.get(h["raw"])
+        h["usd"] = h["balance"] * price if price else None
+    holdings.sort(key=lambda h: (h["usd"] is None, -(h["usd"] or 0), h["symbol"]))
 
     lines = [
-        "💰 <b>Your Balance</b>\n",
-        f"<b>Wallet:</b> <code>{wallet.address}</code>\n",
-        f"<b>TON:</b> {ton_balance:.4f} TON",
+        "💰 <b>Balance</b>",
+        f"👛 <code>{wallet.address}</code>",
+        "",
     ]
+    ton_line = f"💎 <b>TON</b>: {fmt_amount(ton_balance)}"
+    if ton_value is not None:
+        ton_line += f"  (≈ {fmt_usd(ton_value)})"
+    lines.append(ton_line)
 
     if holdings:
-        lines.append("\n<b>Token Holdings:</b>")
-        for h in holdings:
-            lines.append(f"• {h['symbol']} — {h['balance']:.4f}  <i>(tap below for price/MC/liquidity)</i>")
+        lines += ["", f"🪙 <b>Tokens ({len(holdings)})</b>"]
+        for h in holdings[:MAX_TOKENS_SHOWN]:
+            flag = " 🚫" if h["verification"] == "blacklist" else ""
+            line = f"• <b>{esc(h['symbol'])}</b>{flag} — {fmt_amount(h['balance'])}"
+            if h["usd"] is not None:
+                line += f"  (≈ {fmt_usd(h['usd'])})"
+            lines.append(line)
+        if len(holdings) > MAX_TOKENS_SHOWN:
+            lines.append(f"…and {len(holdings) - MAX_TOKENS_SHOWN} more")
+        lines += ["", "Tap a token below to buy or sell it."]
     else:
-        lines.append("\n<i>No token holdings yet.</i>")
+        lines += ["", "<i>No tokens yet — deposit some, or paste a token address to buy one.</i>"]
 
-    lines.append(
-        "\n\n<i>Note: this shows your on-chain TON wallet balance. Telegram "
-        "itself does not have a separate wallet balance beyond TON assets "
-        "held by this address — \"Telegram balance\" here refers to this "
-        "same on-chain wallet, shown for clarity in one place.</i>"
-    )
+    values = [v for v in [ton_value] + [h["usd"] for h in holdings] if v is not None]
+    if values:
+        unpriced = sum(1 for h in holdings if h["usd"] is None)
+        total = f"\n📊 <b>Total:</b> ≈ {fmt_usd(sum(values))}"
+        if unpriced:
+            total += f"  <i>(+{unpriced} token{'s' if unpriced != 1 else ''} without a price)</i>"
+        lines.append(total)
 
-    kb_rows = []
-    for h in holdings[:10]:  # inline buttons per holding to trade directly
-        kb_rows.append([
-            InlineKeyboardButton(text=f"Sell {h['symbol']}", callback_data=f"sell:holding:{h['contract']}"),
-            InlineKeyboardButton(text=f"Buy more {h['symbol']}", callback_data=f"buy:holding:{h['contract']}"),
+    rows = []
+    shown = holdings[:MAX_TOKENS_SHOWN]
+    for i in range(0, len(shown), 2):
+        rows.append([
+            InlineKeyboardButton(text=f"🪙 {h['symbol'][:14]}", callback_data=f"tk:{h['contract']}")
+            for h in shown[i:i + 2]
         ])
-    kb_rows.append([InlineKeyboardButton(text="🔄 Refresh", callback_data="menu:balance")])
-    kb_rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="menu:home")])
+    rows.append([InlineKeyboardButton(text="🔄 Refresh", callback_data="bal:refresh")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
-    await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+async def send_balance(event):
+    """Entry point for 💰 Balance menu button and Refresh callback."""
+    wallet = await require_wallet(event)
+    if not wallet:
+        return
+
+    loading = None
+    try:
+        if isinstance(event, CallbackQuery):
+            try:
+                await event.answer("🔄 Refreshing…")
+            except Exception:
+                pass
+            target = event.message
+        else:
+            loading = await event.answer("⏳ Fetching your balance…")
+            target = loading
+    except Exception as e:
+        logger.warning("could not send loading message: %s", e)
+        target = event.message if isinstance(event, CallbackQuery) else event
+
+    try:
+        text, kb = await build_balance(wallet)
+    except Exception as e:
+        logger.exception("balance lookup failed")
+        text = (
+            "⚠️ <b>Couldn't load your balance right now.</b>\n\n"
+            "The blockchain data provider didn't respond. Please try again in a few seconds."
+        )
+        if is_admin(event.from_user.id):
+            text += f"\n\n<i>Admin detail:</i> <code>{esc(str(e) or type(e).__name__)[:300]}</code>"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Try again", callback_data="bal:refresh")]
+        ])
+
+    try:
+        await edit(target, text, kb)
+    except Exception:
+        logger.exception("balance edit failed, sending new message")
+        try:
+            if isinstance(event, CallbackQuery):
+                await event.message.answer(text, reply_markup=kb)
+            else:
+                await event.answer(text, reply_markup=kb)
+        except Exception:
+            logger.exception("balance final send also failed")
+
+
+@router.callback_query(F.data == "bal:refresh")
+async def refresh_balance(callback: CallbackQuery):
+    await send_balance(callback)

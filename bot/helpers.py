@@ -19,22 +19,47 @@ logger = logging.getLogger(__name__)
 # ---- persistent bottom menu (reply keyboard) --------------------------------
 
 MENU_BALANCE = "💰 Balance"
+MENU_DEPOSIT = "📥 Deposit"
+MENU_BUY = "🟢 Buy"
+MENU_SELL = "🔴 Sell"
 MENU_SWAP = "🔁 Swap"
 MENU_SETTINGS = "⚙️ Settings"
-MENU_DEPOSIT = "📥 Deposit"
-MENU_TEXTS = {MENU_BALANCE, MENU_SWAP, MENU_SETTINGS, MENU_DEPOSIT}
+
+# Accept common variants already sitting on users' reply keyboards
+MENU_BALANCE_ALIASES = {MENU_BALANCE, "Balance", "💰Balance"}
+MENU_DEPOSIT_ALIASES = {MENU_DEPOSIT, "Deposit", "📥Deposit"}
+MENU_BUY_ALIASES = {MENU_BUY, "Buy", "🟢Buy", "🟢  Buy"}
+MENU_SELL_ALIASES = {MENU_SELL, "Sell", "🔴Sell", "🔴  Sell"}
+MENU_SWAP_ALIASES = {MENU_SWAP, "🔄 Swap", "Swap", "🔁Swap", "🔄Swap"}
+MENU_SETTINGS_ALIASES = {MENU_SETTINGS, "Settings", "⚙️Settings"}
+
+MENU_TEXTS = (
+    MENU_BALANCE_ALIASES | MENU_DEPOSIT_ALIASES | MENU_BUY_ALIASES
+    | MENU_SELL_ALIASES | MENU_SWAP_ALIASES | MENU_SETTINGS_ALIASES
+)
 
 
 def main_reply_kb() -> ReplyKeyboardMarkup:
+    """Bottom menu — always visible. System keyboard only opens when the user
+    taps the text field (to type an amount or paste a CA)."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_SWAP)],
-            [KeyboardButton(text=MENU_SETTINGS), KeyboardButton(text=MENU_DEPOSIT)],
+            [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_DEPOSIT)],
+            [KeyboardButton(text=MENU_BUY), KeyboardButton(text=MENU_SELL)],
+            [KeyboardButton(text=MENU_SWAP)],
+            [KeyboardButton(text=MENU_SETTINGS)],
         ],
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Paste a token address to trade…",
+        one_time_keyboard=False,
+        input_field_placeholder="Paste a token CA or type an amount…",
     )
+
+
+def remove_reply_kb() -> ReplyKeyboardRemove:
+    """Only used if we ever need to clear the menu (we normally don't)."""
+    from aiogram.types import ReplyKeyboardRemove
+    return ReplyKeyboardRemove(remove_keyboard=True)
 
 
 def onboarding_kb() -> InlineKeyboardMarkup:

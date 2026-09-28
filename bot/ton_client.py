@@ -1,19 +1,45 @@
 """
 TON chain interactions: wallet generation/import, balance + token holdings
-reads, and raw transfer building. Swap-specific logic lives in dex.py.
+reads, token metadata/market data, and USD prices. Swap-specific logic
+lives in dex.py.
 
-Uses tonsdk for key/wallet derivation. Swap network calls go through
-toncenter.com / tonapi.io — set TON_API_KEY in .env.
+Reads go through tonapi.io (set TON_API_KEY for a higher rate limit) and
+DexScreener (free, no key). Every network call goes through _tonapi_get(),
+which retries on rate limits / server errors and raises TonApiError with a
+readable message instead of failing silently.
 """
+
+import asyncio
+import logging
+import time
+from urllib.parse import quote
 
 import httpx
 from tonsdk.contract.wallet import Wallets, WalletVersionEnum
-from tonsdk.crypto import mnemonic_new, mnemonic_to_wallet_key
+from tonsdk.crypto import mnemonic_new
 
+import addr_utils
 from config import config
+
+logger = logging.getLogger(__name__)
+
+def _path_addr(address: str) -> str:
+    """URL-encode a TON address for use in path segments (addresses can contain / + =)."""
+    return quote(address.strip(), safe="")
 
 TONAPI_BASE = "https://tonapi.io/v2" if config.TON_NETWORK == "mainnet" else "https://testnet.tonapi.io/v2"
 
+_META_TTL_SECONDS = 600
+_meta_cache: dict[str, tuple[float, dict]] = {}
+
+
+class TonApiError(Exception):
+    """Raised when the chain data provider can't be reached or rejects us."""
+
+
+# ----------------------------------------------------------------------------
+# Wallet creation / import
+# ----------------------------------------------------------------------------
 
 def create_new_wallet() -> tuple[str, str]:
     """Generates a new mnemonic + wallet address. Returns (mnemonic_str, address)."""
@@ -27,7 +53,7 @@ def import_wallet_from_mnemonic(mnemonic_str: str) -> str:
     """Validates a mnemonic and returns the derived address. Raises ValueError if invalid."""
     words = mnemonic_str.strip().split()
     if len(words) not in (12, 24):
-        raise ValueError("Mnemonic must be 12 or 24 words.")
+        raise ValueError("Seed phrase must be 12 or 24 words.")
     try:
         _, _, _, wallet = Wallets.from_mnemonics(words, WalletVersionEnum.v4r2, 0)
     except Exception as e:
@@ -35,76 +61,162 @@ def import_wallet_from_mnemonic(mnemonic_str: str) -> str:
     return wallet.address.to_string(is_user_friendly=True, is_bounceable=False)
 
 
+# ----------------------------------------------------------------------------
+# HTTP helper
+# ----------------------------------------------------------------------------
+
+async def _tonapi_get(path: str, params: dict | None = None) -> dict | None:
+    """
+    GET a tonapi.io path. Returns parsed JSON, or None if the entity doesn't
+    exist (404/400 - e.g. a brand-new wallet that has never been active, or a
+    bad token address). Retries on 429 / 5xx / network errors, then raises
+    TonApiError.
+    """
+    headers = {"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {}
+    last_error = "unknown error"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for attempt in range(3):
+            try:
+                r = await client.get(f"{TONAPI_BASE}{path}", headers=headers, params=params)
+            except httpx.HTTPError as e:
+                last_error = f"network error: {type(e).__name__}"
+                await asyncio.sleep(1 + attempt)
+                continue
+
+            if r.status_code in (400, 404):
+                return None
+            if r.status_code in (401, 403):
+                raise TonApiError("TonAPI rejected the request - check the TON_API_KEY variable.")
+            if r.status_code == 429 or r.status_code >= 500:
+                last_error = f"TonAPI busy (HTTP {r.status_code})"
+                await asyncio.sleep(1.2 * (attempt + 1))
+                continue
+            try:
+                r.raise_for_status()
+                return r.json()
+            except (httpx.HTTPStatusError, ValueError) as e:
+                raise TonApiError(f"TonAPI error: {e}") from e
+
+    raise TonApiError(last_error)
+
+
+# ----------------------------------------------------------------------------
+# Balances
+# ----------------------------------------------------------------------------
+
 async def get_ton_balance(address: str) -> float:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{TONAPI_BASE}/accounts/{address}",
-            headers={"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {},
-        )
-        r.raise_for_status()
-        data = r.json()
-        return int(data.get("balance", 0)) / 1e9
+    """TON balance. A wallet that has never received anything returns 0.0."""
+    data = await _tonapi_get(f"/accounts/{_path_addr(address)}")
+    if not data:
+        return 0.0
+    return int(data.get("balance", 0)) / 1e9
 
 
 async def get_jetton_holdings(address: str) -> list[dict]:
-    """Returns list of {symbol, name, contract, balance, decimals} for all jettons held."""
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{TONAPI_BASE}/accounts/{address}/jettons",
-            headers={"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {},
-        )
-        r.raise_for_status()
-        data = r.json()
+    """
+    Every jetton the wallet holds with a non-zero balance:
+    [{symbol, name, contract, raw, balance, decimals, verification}]
+    `contract` is the 48-char friendly address (safe for buttons); `raw` is
+    the canonical raw form used for stable comparisons / DB keys.
+    """
+    data = await _tonapi_get(f"/accounts/{_path_addr(address)}/jettons")
+    if not data:
+        return []
 
     holdings = []
     for item in data.get("balances", []):
-        jetton = item.get("jetton", {})
-        decimals = jetton.get("decimals", 9)
-        raw_balance = int(item.get("balance", 0))
+        jetton = item.get("jetton") or {}
+        raw_addr = jetton.get("address", "")
+        friendly = addr_utils.to_friendly(raw_addr)
+        if not friendly:
+            continue
+        decimals = int(jetton.get("decimals", 9))
+        balance = int(item.get("balance", 0)) / (10 ** decimals)
+        if balance <= 0:
+            continue
         holdings.append({
-            "symbol": jetton.get("symbol", "???"),
-            "name": jetton.get("name", "Unknown"),
-            "contract": jetton.get("address", ""),
-            "balance": raw_balance / (10 ** decimals),
+            "symbol": jetton.get("symbol") or "???",
+            "name": jetton.get("name") or "Unknown",
+            "contract": friendly,
+            "raw": addr_utils.to_raw(raw_addr),
+            "balance": balance,
             "decimals": decimals,
+            "verification": jetton.get("verification", "none"),
         })
     return holdings
 
 
+async def get_usd_prices(jetton_addrs: list[str]) -> dict:
+    """
+    Best-effort USD prices from tonapi /rates. Returns {"TON": price, "<raw addr>": price, ...}.
+    Anything tonapi can't price is simply missing from the result; never raises.
+    """
+    tokens = ["ton"]
+    for a in jetton_addrs[:30]:
+        f = addr_utils.to_friendly(a)
+        if f:
+            tokens.append(f)
+    try:
+        data = await _tonapi_get("/rates", params={"tokens": ",".join(tokens), "currencies": "usd"})
+    except TonApiError as e:
+        logger.warning(f"price lookup failed: {e}")
+        return {}
+
+    out: dict = {}
+    for key, val in ((data or {}).get("rates") or {}).items():
+        price = ((val or {}).get("prices") or {}).get("USD")
+        if price is None:
+            continue
+        if str(key).upper() == "TON":
+            out["TON"] = float(price)
+        else:
+            raw = addr_utils.to_raw(key)
+            if raw:
+                out[raw] = float(price)
+    return out
+
+
+# ----------------------------------------------------------------------------
+# Token info
+# ----------------------------------------------------------------------------
+
 async def get_token_metadata(contract_address: str) -> dict | None:
-    """Look up a jetton by CA — used when a user pastes a contract address to buy."""
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{TONAPI_BASE}/jettons/{contract_address}",
-            headers={"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {},
-        )
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        meta = data.get("metadata", {})
-        total_supply_raw = int(data.get("total_supply", 0))
-        decimals = int(meta.get("decimals", 9))
-        return {
-            "symbol": meta.get("symbol", "???"),
-            "name": meta.get("name", "Unknown"),
-            "contract": contract_address,
-            "decimals": decimals,
-            "total_supply": total_supply_raw / (10 ** decimals),
-            "holders_count": data.get("holders_count"),  # tonapi returns this on the jetton endpoint
-            "verified": data.get("verification") == "whitelist",
-        }
+    """Look up a jetton by address (raw or friendly). None if it isn't a jetton."""
+    friendly = addr_utils.to_friendly(contract_address)
+    if not friendly:
+        return None
+
+    cached = _meta_cache.get(friendly)
+    if cached and time.time() - cached[0] < _META_TTL_SECONDS:
+        return cached[1]
+
+    data = await _tonapi_get(f"/jettons/{_path_addr(friendly)}")
+    if not data:
+        return None
+
+    meta = data.get("metadata") or {}
+    decimals = int(meta.get("decimals", 9))
+    result = {
+        "symbol": meta.get("symbol") or "???",
+        "name": meta.get("name") or "Unknown",
+        "contract": friendly,
+        "decimals": decimals,
+        "total_supply": int(data.get("total_supply", 0)) / (10 ** decimals),
+        "holders_count": data.get("holders_count"),
+        "verification": data.get("verification", "none"),
+    }
+    _meta_cache[friendly] = (time.time(), result)
+    return result
 
 
 async def get_token_market_data(contract_address: str) -> dict | None:
     """
     Price / market cap / liquidity / 24h volume + holder count for a jetton.
 
-    Uses DexScreener's public API for price/liquidity/volume (free, no key,
-    aggregates STON.fi + DeDust pools) and tonapi.io for holder count and
-    on-chain metadata, then merges the two. If DexScreener has no pool for
-    a token (too new / no liquidity yet), price/liquidity fields come back
-    as None rather than fabricated numbers — the caller should render that
-    as "No liquidity found" rather than showing a fake $0.
+    Price data comes from DexScreener (free, aggregates STON.fi + DeDust pools);
+    holder count and on-chain metadata from tonapi. If DexScreener has no pool
+    for the token, the market fields are None (shown as "-", never a fake $0).
     """
     meta = await get_token_metadata(contract_address)
     if meta is None:
@@ -122,29 +234,26 @@ async def get_token_market_data(contract_address: str) -> dict | None:
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}")
+            r = await client.get(f"https://api.dexscreener.com/latest/dex/tokens/{meta['contract']}")
             if r.status_code == 200:
-                data = r.json()
-                pairs = data.get("pairs") or []
-                # TON pairs only, pick the deepest-liquidity pool if several exist
-                ton_pairs = [p for p in pairs if p.get("chainId") == "ton"]
-                if ton_pairs:
-                    best = max(
-                        ton_pairs,
-                        key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0),
-                    )
-                    market["price_usd"] = float(best["priceUsd"]) if best.get("priceUsd") else None
-                    market["market_cap_usd"] = best.get("fdv") or best.get("marketCap")
-                    liq = best.get("liquidity") or {}
-                    market["liquidity_usd"] = liq.get("usd")
-                    vol = best.get("volume") or {}
-                    market["volume_24h_usd"] = vol.get("h24")
-                    change = best.get("priceChange") or {}
-                    market["price_change_24h_pct"] = change.get("h24")
+                pairs = [p for p in (r.json().get("pairs") or []) if p.get("chainId") == "ton"]
+                # prefer pools where this token is the priced (base) side
+                base_pairs = [
+                    p for p in pairs
+                    if addr_utils.same((p.get("baseToken") or {}).get("address", ""), meta["contract"])
+                ]
+                pairs = base_pairs or pairs
+                if pairs:
+                    best = max(pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0))
+                    if best.get("priceUsd"):
+                        market["price_usd"] = float(best["priceUsd"])
+                    market["market_cap_usd"] = best.get("marketCap") or best.get("fdv")
+                    market["liquidity_usd"] = (best.get("liquidity") or {}).get("usd")
+                    market["volume_24h_usd"] = (best.get("volume") or {}).get("h24")
+                    market["price_change_24h_pct"] = (best.get("priceChange") or {}).get("h24")
                     market["dex"] = best.get("dexId")
                     market["pair_url"] = best.get("url")
-    except (httpx.HTTPError, ValueError, KeyError):
-        # DexScreener down or token not indexed there yet — leave market fields as None
-        pass
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        pass  # DexScreener down / token not indexed yet - leave market fields as None
 
     return {**meta, **market}

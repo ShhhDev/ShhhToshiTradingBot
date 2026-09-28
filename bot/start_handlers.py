@@ -1,32 +1,11 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart
-from sqlalchemy import select
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message, CallbackQuery
 
-from db import async_session, User, Wallet
+from helpers import get_or_create_user, get_active_wallet, main_reply_kb, onboarding_kb, edit
 
 router = Router()
-
-
-def main_menu_kb(has_wallet: bool) -> InlineKeyboardMarkup:
-    if not has_wallet:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✨ Create Wallet", callback_data="wallet:create")],
-            [InlineKeyboardButton(text="📥 Import Wallet", callback_data="wallet:import")],
-        ])
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💰 Balance", callback_data="menu:balance"),
-            InlineKeyboardButton(text="📥 Deposit", callback_data="menu:deposit"),
-        ],
-        [
-            InlineKeyboardButton(text="🟢 Buy", callback_data="menu:buy"),
-            InlineKeyboardButton(text="🔴 Sell", callback_data="menu:sell"),
-        ],
-        [InlineKeyboardButton(text="🔁 Swap", callback_data="menu:swap")],
-        [InlineKeyboardButton(text="⚙️ Settings", callback_data="menu:settings")],
-    ])
-
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to ShhhToshi</b>\n\n"
@@ -37,33 +16,48 @@ WELCOME_TEXT = (
     "Let's get you set up."
 )
 
+WELCOME_BACK_TEXT = (
+    "👋 <b>Welcome back to ShhhToshi</b>\n\n"
+    "Use the <b>menu buttons</b> below — or paste any token contract address "
+    "to see its price and trade it.\n\n"
+    "If you only see the normal keyboard, tap the button next to the text field "
+    "to switch back to the bot menu."
+)
+
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
-    async with async_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == message.from_user.id)
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await get_or_create_user(message.from_user)
+    wallet = await get_active_wallet(message.from_user.id)
+    if wallet:
+        # Always re-attach the persistent reply menu
+        await message.answer(WELCOME_BACK_TEXT, reply_markup=main_reply_kb())
+    else:
+        await message.answer(WELCOME_TEXT, reply_markup=onboarding_kb())
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message, state: FSMContext):
+    await state.clear()
+    wallet = await get_active_wallet(message.from_user.id)
+    if wallet:
+        await message.answer(
+            "📱 <b>Menu ready</b> — use the buttons below.",
+            reply_markup=main_reply_kb(),
         )
-        user = result.scalar_one_or_none()
-        if user is None:
-            user = User(telegram_id=message.from_user.id, username=message.from_user.username)
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-
-        wallet_result = await session.execute(select(Wallet).where(Wallet.user_id == user.id))
-        has_wallet = wallet_result.scalar_one_or_none() is not None
-
-    await message.answer(WELCOME_TEXT, reply_markup=main_menu_kb(has_wallet))
+    else:
+        await message.answer("Create or import a wallet first:", reply_markup=onboarding_kb())
 
 
 @router.callback_query(F.data == "menu:home")
-async def back_to_menu(callback: CallbackQuery):
-    async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
-        user = result.scalar_one()
-        wallet_result = await session.execute(select(Wallet).where(Wallet.user_id == user.id))
-        has_wallet = wallet_result.scalar_one_or_none() is not None
-
-    await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_menu_kb(has_wallet))
+async def back_to_menu(callback: CallbackQuery, state: FSMContext):
+    """Target of every Cancel / Back button: drop any half-finished flow."""
+    await state.clear()
     await callback.answer()
+    await edit(callback.message, "🏠 Use the menu buttons below.")
+    # Re-show reply keyboard in case it was lost
+    try:
+        await callback.message.answer("📱 Menu:", reply_markup=main_reply_kb())
+    except Exception:
+        pass
