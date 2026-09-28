@@ -56,6 +56,11 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
     )
 
 
+
+# Back-compat alias (some older files import this name)
+main_menu_kb = main_reply_kb
+
+
 def onboarding_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✨ Create Wallet", callback_data="wallet:create")],

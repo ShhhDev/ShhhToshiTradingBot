@@ -5,6 +5,9 @@ from aiogram.types import Message, CallbackQuery
 
 from helpers import get_or_create_user, get_active_wallet, main_reply_kb, onboarding_kb, edit
 
+# Alias used by older wallet_handlers.py on some deploys
+main_menu_kb = main_reply_kb
+
 router = Router()
 
 WELCOME_TEXT = (
