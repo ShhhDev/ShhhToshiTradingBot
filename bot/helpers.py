@@ -19,39 +19,24 @@ logger = logging.getLogger(__name__)
 # ---- persistent bottom menu (reply keyboard) --------------------------------
 
 MENU_BALANCE = "💰 Balance"
-MENU_DEPOSIT = "📥 Deposit"
 MENU_SWAP = "🔁 Swap"
 MENU_SETTINGS = "⚙️ Settings"
-
-# Accept common variants already on users' reply keyboards
-MENU_BALANCE_ALIASES = {MENU_BALANCE, "Balance", "💰Balance"}
-MENU_DEPOSIT_ALIASES = {MENU_DEPOSIT, "Deposit", "📥Deposit"}
-MENU_SWAP_ALIASES = {MENU_SWAP, "🔄 Swap", "Swap", "🔁Swap", "🔄Swap"}
-MENU_SETTINGS_ALIASES = {MENU_SETTINGS, "Settings", "⚙️Settings"}
-
-MENU_TEXTS = (
-    MENU_BALANCE_ALIASES | MENU_DEPOSIT_ALIASES
-    | MENU_SWAP_ALIASES | MENU_SETTINGS_ALIASES
-)
+MENU_DEPOSIT = "📥 Deposit"
+MENU_REFERRAL = "🎁 Referral"
+MENU_TEXTS = {MENU_BALANCE, MENU_SWAP, MENU_SETTINGS, MENU_DEPOSIT, MENU_REFERRAL}
 
 
 def main_reply_kb() -> ReplyKeyboardMarkup:
-    """Bottom menu — only Balance / Deposit / Swap / Settings.
-    Buy & Sell stay as inline buttons on token cards."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_DEPOSIT)],
-            [KeyboardButton(text=MENU_SWAP), KeyboardButton(text=MENU_SETTINGS)],
+            [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_SWAP)],
+            [KeyboardButton(text=MENU_SETTINGS), KeyboardButton(text=MENU_DEPOSIT)],
+            [KeyboardButton(text=MENU_REFERRAL)],
         ],
         resize_keyboard=True,
         is_persistent=True,
-        one_time_keyboard=False,
-        input_field_placeholder="Paste a token CA or type an amount…",
+        input_field_placeholder="Paste a token address to trade…",
     )
-
-
-# Back-compat alias (some older files import this name)
-main_menu_kb = main_reply_kb
 
 
 def onboarding_kb() -> InlineKeyboardMarkup:
@@ -137,12 +122,38 @@ def fmt_price(x) -> str:
 
 # ---- users & wallets --------------------------------------------------------
 
-async def get_or_create_user(tg_user) -> User:
+async def get_or_create_user(tg_user, referred_by_code: str | None = None) -> User:
+    """
+    Fetches (or creates) the User row for this Telegram account.
+    referred_by_code is only honored the first time a user is ever created here
+    (i.e. it can never be set retroactively on an existing account), and a user
+    can never end up referred by themselves.
+    """
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == tg_user.id))
         user = result.scalar_one_or_none()
         if user is None:
-            user = User(telegram_id=tg_user.id, username=tg_user.username)
+            existing_codes = set(
+                (await session.execute(select(User.referral_code))).scalars().all()
+            )
+            import db as _db
+            code = _db._generate_unique_code(existing_codes)
+
+            referred_by_id = None
+            if referred_by_code:
+                ref_result = await session.execute(
+                    select(User).where(User.referral_code == referred_by_code.strip().upper())
+                )
+                referrer = ref_result.scalar_one_or_none()
+                if referrer is not None:
+                    referred_by_id = referrer.id
+
+            user = User(
+                telegram_id=tg_user.id,
+                username=tg_user.username,
+                referral_code=code,
+                referred_by_id=referred_by_id,
+            )
             session.add(user)
             await session.commit()
             await session.refresh(user)

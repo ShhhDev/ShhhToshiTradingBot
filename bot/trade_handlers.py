@@ -8,9 +8,9 @@ All of them share one pipeline:  pick tokens -> amount -> review -> confirm.
 Tokens are picked from your holdings or by pasting a contract address (CA).
 Pasting a CA at any time (outside a flow) opens a token card with Buy / Sell.
 
-Quotes and on-chain swaps run through STON.fi (dex.get_quote / execute_swap).
-Confirm signs with the custodial wallet key, broadcasts the swap, collects
-the bot fee when input is TON, and records a Trade row.
+NOTE: the final on-chain execution lives in dex.py and is still a stub, so
+_execute_trade() currently ends with an honest "trading isn't live yet"
+message. No funds are touched and no fee is charged until dex.py is wired.
 """
 
 import logging
@@ -24,10 +24,8 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 import addr_utils
 import dex
-import encryption
 import fees
 import ton_client
-from db import async_session, Trade
 from config import config
 from helpers import (
     edit, esc, fmt_amount, fmt_big_usd, fmt_pct_bps, fmt_price, get_active_wallet,
@@ -210,61 +208,6 @@ async def close_message(callback: CallbackQuery):
 
 
 # ---- 2. swap: pick FROM, pick TO ------------------------------------------------------
-
-
-async def start_buy(event, state: FSMContext):
-    """🟢 Buy — spend TON for a token. User pastes a CA or picks from holdings later."""
-    wallet = await require_wallet(event)
-    if not wallet:
-        return
-    await state.clear()
-    await state.set_state(TradeFlow.waiting_for_ca)
-    await state.update_data(buy_mode=True, from_token=TON)
-    kb = InlineKeyboardMarkup(inline_keyboard=[_cancel_row()])
-    await reply_or_edit(
-        event,
-        "🟢 <b>Buy</b>\n\n"
-        "Paste the <b>contract address (CA)</b> of the token you want to buy with TON.\n\n"
-        "Or open 💰 Balance / paste a CA anytime for the token card with Buy.",
-        kb,
-    )
-
-
-async def start_sell(event, state: FSMContext):
-    """🔴 Sell — pick a held token to sell for TON."""
-    wallet = await require_wallet(event)
-    if not wallet:
-        return
-    await state.clear()
-    if isinstance(event, CallbackQuery):
-        await event.answer()
-
-    try:
-        holdings = await ton_client.get_jetton_holdings(wallet.address)
-    except Exception as e:
-        await _fail(event, e)
-        return
-
-    if not holdings:
-        await reply_or_edit(
-            event,
-            "🔴 <b>Sell</b>\n\nYou don't hold any jettons yet.\n"
-            "Deposit tokens or buy some first, then tap 🔴 Sell again.",
-            InlineKeyboardMarkup(inline_keyboard=[_cancel_row()]),
-        )
-        return
-
-    buttons = [
-        InlineKeyboardButton(text=f"🪙 {h['symbol'][:14]}", callback_data=f"hs:{h['contract']}")
-        for h in holdings[:20]
-    ]
-    rows = _grid(buttons) + [_cancel_row()]
-    await reply_or_edit(
-        event,
-        "🔴 <b>Sell</b>\n\nChoose the token you want to sell for TON:",
-        InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-
 
 async def start_swap(event, state: FSMContext):
     """🔁 Swap menu button / deposit-notification button."""
@@ -565,51 +508,19 @@ async def _validate_and_review(event, state: FSMContext, amount: float, is_prese
     fee_amount, net = fees.calculate_fee(amount, fc.fee_bps)
     user = await get_or_create_user(event.from_user)
 
-    from_dec = int((from_info or {}).get("decimals", 9) if from_info else data.get("from_dec", 9))
-    to_dec = int((to_info or {}).get("decimals", 9))
-
-    # Live STON.fi quote for the amount that will actually be swapped (after fee)
-    quote_line = ""
-    quote_error = None
-    try:
-        quote = await dex.get_quote(
-            token_in=from_token,
-            token_out=to_token,
-            amount_in=net,
-            slippage_bps=int(user.slippage_bps),
-            decimals_in=from_dec,
-            decimals_out=to_dec,
-        )
-        quote_line = (
-            f"You receive (est.): <b>{fmt_amount(quote.amount_out_estimated, 6)} {to_sym}</b>\n"
-            f"Min received: {fmt_amount(quote.min_amount_out, 6)} {to_sym}\n"
-            f"Price impact: {quote.price_impact_pct:.3f}%\n"
-            f"Route: {esc(quote.route)}\n"
-        )
-    except Exception as e:
-        logger.warning("quote failed during review: %s", e)
-        quote_error = str(e) or type(e).__name__
-        quote_line = (
-            f"You receive (est.): <i>quote unavailable</i>\n"
-            f"<i>{esc(quote_error)[:120]}</i>\n"
-        )
-
     text = (
         "🧾 <b>Review swap</b>\n\n"
         f"You send: <b>{fmt_amount(amount, 6)} {from_sym}</b>\n"
         f"Fee ({fmt_pct_bps(fc.fee_bps)}): {fmt_amount(fee_amount, 6)} {from_sym}\n"
         f"Swapped: {fmt_amount(net, 6)} {from_sym} → <b>{to_sym}</b>\n"
-        f"{quote_line}"
         f"Slippage: {user.slippage_bps / 100:g}%\n"
         "Network fees are paid in TON from your wallet."
     )
     if large:
         text += "\n\n⚠️ <b>Large trade</b> — please double-check the amount before confirming."
-    if quote_error:
-        text += "\n\n⚠️ Could not get a live quote — trade may still be blocked at confirm."
 
     await state.set_state(TradeFlow.confirming)
-    await state.update_data(amount=amount, large=large, from_dec=from_dec, to_dec=to_dec)
+    await state.update_data(amount=amount, large=large)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text="✅ Yes, confirm large trade" if large else "✅ Confirm",
@@ -668,110 +579,30 @@ async def _execute_trade(callback: CallbackQuery, data: dict):
 
     fee_amount, net = fees.calculate_fee(amount, fc.fee_bps)
     user = await get_or_create_user(callback.from_user)
-    from_dec = int(data.get("from_dec", 9))
-    to_dec = int(data.get("to_dec", 9))
     await edit(callback.message, "⏳ Processing your swap…")
-
-    trade_type = "buy" if from_token == TON else ("sell" if to_token == TON else "swap")
-    explorer = (
-        "https://tonviewer.com" if config.TON_NETWORK == "mainnet" else "https://testnet.tonviewer.com"
-    )
 
     try:
         quote = await dex.get_quote(
-            token_in=from_token,
-            token_out=to_token,
-            amount_in=net,
-            slippage_bps=int(user.slippage_bps),
-            decimals_in=from_dec,
-            decimals_out=to_dec,
+            token_in=from_token, token_out=to_token, amount_in=net, slippage_bps=user.slippage_bps,
         )
-
-        mnemonic = encryption.decrypt_mnemonic(wallet.encrypted_mnemonic, wallet.wrapped_data_key)
-        tx_hash = await dex.execute_swap(
-            wallet_mnemonic=mnemonic,
-            quote=quote,
-            user_wallet_address=wallet.address,
-            decimals_in=from_dec,
+        # When dex.py is wired: decrypt the wallet's mnemonic here
+        # (encryption.decrypt_mnemonic), call dex.execute_swap(mnemonic, quote), send `fee_amount`
+        # to fc.dev_wallet, record a Trade row, then show the result with its tx hash.
+        #
+        # Once the fee transfer above actually succeeds on-chain, credit the referrer's
+        # share of it (does nothing if this trader has no referrer):
+        #   from referral_handlers import award_referral_credit
+        #   await award_referral_credit(fee_amount, callback.from_user.id)
+        raise NotImplementedError  # not reached until the block above is implemented
+    except NotImplementedError:
+        await edit(
+            callback.message,
+            "🚧 <b>Trading isn't switched on yet.</b>\n\n"
+            "Your swap was <b>not</b> executed — no funds moved and no fee was charged.",
         )
-
-        # Collect fee in TON when the input is TON (most common buy path).
-        # For jetton sells the fee is already taken as a reduced swap amount;
-        # a separate jetton fee transfer is intentionally skipped for simplicity.
-        fee_tx = None
-        if from_token == TON and fee_amount > 0 and fc.dev_wallet:
-            try:
-                fee_tx = await dex.send_ton(
-                    wallet_mnemonic=mnemonic,
-                    to_address=fc.dev_wallet,
-                    amount_ton=fee_amount,
-                    from_address=wallet.address,
-                    comment="ShhhToshi fee",
-                )
-            except Exception as fee_err:
-                logger.warning("fee transfer failed (swap already sent): %s", fee_err)
-
-        # Record the trade
-        async with async_session() as session:
-            session.add(Trade(
-                user_id=user.id,
-                wallet_address=wallet.address,
-                trade_type=trade_type,
-                token_in=from_token,
-                token_out=to_token,
-                amount_in=float(amount),
-                amount_out=float(quote.amount_out_estimated),
-                fee_bps_applied=int(fc.fee_bps),
-                fee_amount_ton=float(fee_amount if from_token == TON else 0),
-                fee_tx_hash=fee_tx,
-                tx_hash=tx_hash,
-                status="success",
-            ))
-            await session.commit()
-
-        from_info = await _token_info(from_token)
-        to_info = await _token_info(to_token)
-        from_sym = esc((from_info or {}).get("symbol") or from_token[:8])
-        to_sym = esc((to_info or {}).get("symbol") or to_token[:8])
-
-        link = f"{explorer}/transaction/{tx_hash}" if tx_hash and tx_hash != "submitted" else explorer
-        text = (
-            f"✅ <b>Swap submitted</b>\n\n"
-            f"Sent: <b>{fmt_amount(amount, 6)} {from_sym}</b>\n"
-            f"Fee: {fmt_amount(fee_amount, 6)} {from_sym}\n"
-            f"Est. receive: <b>{fmt_amount(quote.amount_out_estimated, 6)} {to_sym}</b>\n"
-            f"Route: {esc(quote.route)}\n"
-            f"Tx: <code>{esc(str(tx_hash)[:64])}</code>\n"
-            f'<a href="{link}">View on explorer</a>\n\n'
-            "Balances update after the network confirms the transaction."
-        )
-        await edit(callback.message, text)
-
     except Exception as e:
         logger.error("swap failed", exc_info=e)
-        # best-effort failed trade row
-        try:
-            async with async_session() as session:
-                session.add(Trade(
-                    user_id=user.id,
-                    wallet_address=wallet.address,
-                    trade_type=trade_type,
-                    token_in=from_token,
-                    token_out=to_token,
-                    amount_in=float(amount),
-                    amount_out=0,
-                    fee_bps_applied=int(fc.fee_bps),
-                    fee_amount_ton=0,
-                    status="failed",
-                ))
-                await session.commit()
-        except Exception:
-            pass
-        msg = (
-            "❌ The swap couldn't be completed.\n\n"
-            f"<i>{esc(str(e) or type(e).__name__)[:240]}</i>\n\n"
-            "Please check your balance and try again."
+        await edit(
+            callback.message,
+            "❌ The swap couldn't be completed. Please check your balance before trying again.",
         )
-        if is_admin(callback.from_user.id):
-            msg += f"\n\n<code>{esc(repr(e))[:300]}</code>"
-        await edit(callback.message, msg)

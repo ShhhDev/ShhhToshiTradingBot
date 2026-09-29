@@ -1,49 +1,20 @@
+import logging
+
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
-from db import async_session, User, Wallet
-import ton_client
 import encryption
-from start_handlers import main_menu_kb
+import ton_client
+from db import async_session, Wallet
+from helpers import edit, esc, get_or_create_user, main_reply_kb
 
+logger = logging.getLogger(__name__)
 router = Router()
 
-
-@router.callback_query(F.data == "menu:deposit")
-async def show_deposit(callback: CallbackQuery):
-    async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
-        user = result.scalar_one_or_none()
-        wallet = None
-        if user:
-            wallet_result = await session.execute(
-                select(Wallet).where(Wallet.user_id == user.id, Wallet.is_primary == True)  # noqa: E712
-            )
-            wallet = wallet_result.scalar_one_or_none()
-
-    if not wallet:
-        await callback.answer("No wallet found. Create one first.", show_alert=True)
-        return
-
-    text = (
-        "📥 <b>Deposit</b>\n\n"
-        "Send <b>TON</b> or any <b>jetton on the TON network</b> to this address:\n\n"
-        f"<code>{wallet.address}</code>\n\n"
-        "Tap the address above to copy it.\n\n"
-        "⚠️ Only send assets on the <b>TON blockchain</b>. Anything sent on another "
-        "network to this address will be lost permanently.\n\n"
-        "You'll get a message here as soon as a deposit is detected, with buttons "
-        "to buy more or sell right away."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Check balance now", callback_data="menu:balance")],
-        [InlineKeyboardButton(text="⬅️ Back", callback_data="menu:home")],
-    ])
-    await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer()
+READY_TEXT = "You're all set — use the menu below to deposit, trade and manage your wallets."
 
 
 class ImportWallet(StatesGroup):
@@ -54,82 +25,110 @@ class ConfirmNewWallet(StatesGroup):
     waiting_for_ack = State()
 
 
+# ---- create ------------------------------------------------------------------
+
 @router.callback_query(F.data == "wallet:create")
 async def create_wallet_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     mnemonic, address = ton_client.create_new_wallet()
-    await state.update_data(pending_mnemonic=mnemonic, pending_address=address)
     await state.set_state(ConfirmNewWallet.waiting_for_ack)
+    await state.update_data(pending_mnemonic=mnemonic, pending_address=address)
 
     text = (
         "🆕 <b>Your new wallet</b>\n\n"
         f"<code>{address}</code>\n\n"
         "⚠️ <b>Write down your seed phrase below and store it somewhere safe "
-        "OFFLINE.</b> Anyone with these words can take everything in this wallet. "
-        "Delete this message after saving it.\n\n"
-        f"<tg-spoiler>{mnemonic}</tg-spoiler>\n\n"
-        "Tap below once you've saved it. Your phrase will also be encrypted "
-        "and stored securely so the bot can trade for you — it is never shown "
-        "again after this message."
+        "OFFLINE.</b> Anyone with these words can take everything in this wallet.\n\n"
+        f"<tg-spoiler>{esc(mnemonic)}</tg-spoiler>\n\n"
+        "Tap below once you've saved it. This message is replaced as soon as you "
+        "confirm. You can view the phrase again later from ⚙️ Settings."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ I've saved my seed phrase", callback_data="wallet:confirm_create")],
         [InlineKeyboardButton(text="❌ Cancel", callback_data="menu:home")],
     ])
-    await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer()
+    await edit(callback.message, text, kb)
 
 
 @router.callback_query(F.data == "wallet:confirm_create", ConfirmNewWallet.waiting_for_ack)
 async def create_wallet_confirm(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    mnemonic, address = data["pending_mnemonic"], data["pending_address"]
-    await _persist_wallet(callback.from_user, mnemonic, address, imported=False)
+    mnemonic, address = data.get("pending_mnemonic"), data.get("pending_address")
     await state.clear()
-
-    await callback.message.edit_text(
-        f"✅ Wallet created and secured.\n\n<code>{address}</code>",
-        reply_markup=main_menu_kb(has_wallet=True),
-    )
     await callback.answer()
+    if not mnemonic or not address:
+        await edit(callback.message, "⚠️ That request expired. Tap ⚙️ Settings → Add Wallet to start again.")
+        return
 
+    await _persist_wallet(callback.from_user, mnemonic, address, imported=False)
+    await edit(callback.message, f"✅ <b>Wallet created and secured.</b>\n\n<code>{address}</code>")
+    await callback.message.answer(READY_TEXT, reply_markup=main_reply_kb())
+
+
+@router.callback_query(F.data == "wallet:confirm_create")
+async def create_wallet_confirm_stale(callback: CallbackQuery):
+    await callback.answer("This request expired - please start again.", show_alert=True)
+
+
+# ---- import ------------------------------------------------------------------
 
 @router.callback_query(F.data == "wallet:import")
 async def import_wallet_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await state.set_state(ImportWallet.waiting_for_mnemonic)
     text = (
         "📥 <b>Import Wallet</b>\n\n"
-        "Send your 12 or 24-word seed phrase as a message.\n\n"
-        "⚠️ Only do this in a private chat you trust. Your phrase will be "
-        "encrypted immediately and stored securely — delete your message "
-        "with the phrase afterward for safety.\n\n"
+        "Send your seed phrase (12 or 24 words) as a message.\n\n"
+        "⚠️ Only do this in this private chat. Your message is deleted automatically "
+        "and the phrase is encrypted before it is stored.\n\n"
         "Send /cancel to abort."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Cancel", callback_data="menu:home")]
     ])
-    await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer()
+    await edit(callback.message, text, kb)
 
 
 @router.message(ImportWallet.waiting_for_mnemonic)
 async def import_wallet_receive(message: Message, state: FSMContext):
-    try:
-        address = ton_client.import_wallet_from_mnemonic(message.text)
-    except ValueError as e:
-        await message.answer(f"❌ {e}\n\nTry again, or send /cancel.")
+    if not message.text:
+        await message.answer("Please send your seed phrase as text, or /cancel.")
         return
 
-    await _persist_wallet(message.from_user, message.text.strip(), address, imported=True)
+    phrase = " ".join(message.text.lower().split())
+
+    # Remove the user's message containing the phrase right away (bots are allowed
+    # to delete incoming messages in private chats).
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.info(f"could not delete seed phrase message: {e}")
+
+    try:
+        address = ton_client.import_wallet_from_mnemonic(phrase)
+    except ValueError as e:
+        await message.answer(f"❌ {esc(e)}\n\nSend it again, or /cancel.")
+        return
+
+    status = await _persist_wallet(message.from_user, phrase, address, imported=True)
     await state.clear()
 
-    # best-effort: remind user to delete their message (bot can't delete user msgs
-    # without delete permission in the chat, so just instruct them)
-    await message.answer(
-        f"✅ Wallet imported and secured.\n\n<code>{address}</code>\n\n"
-        "🗑️ Please delete your previous message containing the seed phrase now.",
-        reply_markup=main_menu_kb(has_wallet=True),
-    )
+    if status == "duplicate_other":
+        await message.answer("❌ That wallet is already registered with another account in this bot.")
+    elif status == "duplicate_self":
+        await message.answer(
+            f"ℹ️ That wallet is already in your account — it's now your active wallet.\n\n<code>{address}</code>",
+            reply_markup=main_reply_kb(),
+        )
+    else:
+        await message.answer(
+            f"✅ <b>Wallet imported and secured.</b>\n\n<code>{address}</code>\n\n"
+            "Your message with the phrase was deleted from this chat.",
+            reply_markup=main_reply_kb(),
+        )
 
+
+# ---- cancel ------------------------------------------------------------------
 
 @router.message(F.text == "/cancel")
 async def cancel_flow(message: Message, state: FSMContext):
@@ -139,25 +138,40 @@ async def cancel_flow(message: Message, state: FSMContext):
     await message.answer("Cancelled.")
 
 
-async def _persist_wallet(tg_user, mnemonic: str, address: str, imported: bool):
+# ---- storage -----------------------------------------------------------------
+
+async def _persist_wallet(tg_user, mnemonic: str, address: str, imported: bool) -> str:
+    """Stores a wallet and makes it the user's active one.
+    Returns "ok", "duplicate_self" (already theirs; just re-activated) or "duplicate_other"."""
+    user = await get_or_create_user(tg_user)
     encrypted_mnemonic, wrapped_key = encryption.encrypt_mnemonic(mnemonic)
 
     async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == tg_user.id))
-        user = result.scalar_one_or_none()
-        if user is None:
-            user = User(telegram_id=tg_user.id, username=tg_user.username)
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
+        existing = (await session.execute(
+            select(Wallet).where(Wallet.address == address)
+        )).scalars().first()
 
-        wallet = Wallet(
+        own = (await session.execute(
+            select(Wallet).where(Wallet.user_id == user.id)
+        )).scalars().all()
+
+        if existing is not None:
+            if existing.user_id != user.id:
+                return "duplicate_other"
+            for w in own:
+                w.is_primary = (w.id == existing.id)
+            await session.commit()
+            return "duplicate_self"
+
+        for w in own:
+            w.is_primary = False
+        session.add(Wallet(
             user_id=user.id,
             address=address,
             encrypted_mnemonic=encrypted_mnemonic,
             wrapped_data_key=wrapped_key,
             is_primary=True,
             imported=imported,
-        )
-        session.add(wallet)
+        ))
         await session.commit()
+    return "ok"

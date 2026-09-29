@@ -39,17 +39,6 @@ async def send_deposit(event):
     await event.answer(_deposit_text(wallet.address), reply_markup=_deposit_screen_kb())
 
 
-
-
-@router.callback_query(F.data == "dep:home")
-async def deposit_home(callback: CallbackQuery):
-    wallet = await require_wallet(callback)
-    if not wallet:
-        return
-    await callback.answer()
-    await edit(callback.message, _deposit_text(wallet.address), _deposit_screen_kb())
-
-
 @router.callback_query(F.data == "dep:check")
 async def check_deposit(callback: CallbackQuery):
     wallet = await require_wallet(callback)

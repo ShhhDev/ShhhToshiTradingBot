@@ -1,7 +1,7 @@
 import logging
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import ton_client
 from helpers import (
@@ -18,10 +18,7 @@ async def build_balance(wallet) -> tuple[str, InlineKeyboardMarkup]:
     """Fetches live data and renders the Balance screen. Raises on provider failure."""
     ton_balance = await ton_client.get_ton_balance(wallet.address)
     holdings = await ton_client.get_jetton_holdings(wallet.address)
-    try:
-        prices = await ton_client.get_usd_prices([h["contract"] for h in holdings])
-    except Exception:
-        prices = {}
+    prices = await ton_client.get_usd_prices([h["contract"] for h in holdings])
 
     ton_price = prices.get("TON")
     ton_value = ton_balance * ton_price if ton_price else None
@@ -74,25 +71,16 @@ async def build_balance(wallet) -> tuple[str, InlineKeyboardMarkup]:
 
 
 async def send_balance(event):
-    """Entry point for 💰 Balance menu button and Refresh callback."""
+    """Entry point for both the 💰 Balance menu button (Message) and Refresh (CallbackQuery)."""
     wallet = await require_wallet(event)
     if not wallet:
         return
 
     loading = None
-    try:
-        if isinstance(event, CallbackQuery):
-            try:
-                await event.answer("🔄 Refreshing…")
-            except Exception:
-                pass
-            target = event.message
-        else:
-            loading = await event.answer("⏳ Fetching your balance…")
-            target = loading
-    except Exception as e:
-        logger.warning("could not send loading message: %s", e)
-        target = event.message if isinstance(event, CallbackQuery) else event
+    if isinstance(event, CallbackQuery):
+        await event.answer("🔄 Refreshing…")
+    else:
+        loading = await event.answer("⏳ Fetching your balance…")
 
     try:
         text, kb = await build_balance(wallet)
@@ -108,17 +96,7 @@ async def send_balance(event):
             [InlineKeyboardButton(text="🔄 Try again", callback_data="bal:refresh")]
         ])
 
-    try:
-        await edit(target, text, kb)
-    except Exception:
-        logger.exception("balance edit failed, sending new message")
-        try:
-            if isinstance(event, CallbackQuery):
-                await event.message.answer(text, reply_markup=kb)
-            else:
-                await event.answer(text, reply_markup=kb)
-        except Exception:
-            logger.exception("balance final send also failed")
+    await edit(loading if loading else event.message, text, kb)
 
 
 @router.callback_query(F.data == "bal:refresh")

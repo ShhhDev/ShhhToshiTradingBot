@@ -12,7 +12,6 @@ readable message instead of failing silently.
 import asyncio
 import logging
 import time
-from urllib.parse import quote
 
 import httpx
 from tonsdk.contract.wallet import Wallets, WalletVersionEnum
@@ -22,10 +21,6 @@ import addr_utils
 from config import config
 
 logger = logging.getLogger(__name__)
-
-def _path_addr(address: str) -> str:
-    """URL-encode a TON address for use in path segments (addresses can contain / + =)."""
-    return quote(address.strip(), safe="")
 
 TONAPI_BASE = "https://tonapi.io/v2" if config.TON_NETWORK == "mainnet" else "https://testnet.tonapi.io/v2"
 
@@ -71,13 +66,9 @@ async def _tonapi_get(path: str, params: dict | None = None) -> dict | None:
     exist (404/400 - e.g. a brand-new wallet that has never been active, or a
     bad token address). Retries on 429 / 5xx / network errors, then raises
     TonApiError.
-
-    If TON_API_KEY is set but invalid (401/403), retries once without auth so
-    the bot still works on the public rate limit.
     """
     headers = {"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {}
     last_error = "unknown error"
-    auth_dropped = False
 
     async with httpx.AsyncClient(timeout=15) as client:
         for attempt in range(3):
@@ -91,19 +82,7 @@ async def _tonapi_get(path: str, params: dict | None = None) -> dict | None:
             if r.status_code in (400, 404):
                 return None
             if r.status_code in (401, 403):
-                if headers and not auth_dropped:
-                    # Bad / expired key — fall back to unauthenticated public API
-                    logger.warning(
-                        "TonAPI 401/403 with TON_API_KEY — retrying without auth. "
-                        "Fix or remove TON_API_KEY in Railway variables."
-                    )
-                    headers = {}
-                    auth_dropped = True
-                    continue
-                raise TonApiError(
-                    "TonAPI rejected the request. Set a valid TON_API_KEY "
-                    "from https://tonconsole.com/ or leave it empty."
-                )
+                raise TonApiError("TonAPI rejected the request - check the TON_API_KEY variable.")
             if r.status_code == 429 or r.status_code >= 500:
                 last_error = f"TonAPI busy (HTTP {r.status_code})"
                 await asyncio.sleep(1.2 * (attempt + 1))
@@ -123,7 +102,7 @@ async def _tonapi_get(path: str, params: dict | None = None) -> dict | None:
 
 async def get_ton_balance(address: str) -> float:
     """TON balance. A wallet that has never received anything returns 0.0."""
-    data = await _tonapi_get(f"/accounts/{_path_addr(address)}")
+    data = await _tonapi_get(f"/accounts/{address}")
     if not data:
         return 0.0
     return int(data.get("balance", 0)) / 1e9
@@ -136,7 +115,7 @@ async def get_jetton_holdings(address: str) -> list[dict]:
     `contract` is the 48-char friendly address (safe for buttons); `raw` is
     the canonical raw form used for stable comparisons / DB keys.
     """
-    data = await _tonapi_get(f"/accounts/{_path_addr(address)}/jettons")
+    data = await _tonapi_get(f"/accounts/{address}/jettons")
     if not data:
         return []
 
@@ -207,7 +186,7 @@ async def get_token_metadata(contract_address: str) -> dict | None:
     if cached and time.time() - cached[0] < _META_TTL_SECONDS:
         return cached[1]
 
-    data = await _tonapi_get(f"/jettons/{_path_addr(friendly)}")
+    data = await _tonapi_get(f"/jettons/{friendly}")
     if not data:
         return None
 

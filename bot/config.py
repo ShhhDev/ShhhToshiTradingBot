@@ -9,6 +9,11 @@ def _int(name: str, default: int) -> int:
     return int(v) if v not in (None, "") else default
 
 
+def _float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    return float(v) if v not in (None, "") else default
+
+
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
     ADMIN_TELEGRAM_IDS = {
@@ -36,6 +41,15 @@ class Config:
     MAX_TRADE_TON = _int("MAX_TRADE_TON", 0)  # 0 = no cap
     MAX_DAILY_VOLUME_TON = _int("MAX_DAILY_VOLUME_TON", 0)
     LARGE_TRADE_CONFIRM_THRESHOLD_TON = _int("LARGE_TRADE_CONFIRM_THRESHOLD_TON", 1000)
+
+    # TON kept aside in the wallet for network (gas) fees on every trade.
+    # Optional env var; a buy can never spend the last GAS_RESERVE_TON of a wallet.
+    GAS_RESERVE_TON = _float("GAS_RESERVE_TON", 0.5)
+
+    # Referral program: share of the trade fee credited to the referrer, and the
+    # minimum balance a user must reach before they can submit a claim request.
+    REFERRAL_SHARE_BPS = _int("REFERRAL_SHARE_BPS", 1000)   # 1000 = 10% of the fee
+    REFERRAL_MIN_CLAIM_TON = _float("REFERRAL_MIN_CLAIM_TON", 1.0)
 
     # On Railway, add a Postgres plugin and it injects DATABASE_URL automatically
     # (as postgresql://...). We rewrite it to the async driver SQLAlchemy needs.

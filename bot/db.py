@@ -22,7 +22,14 @@ class User(Base):
     slippage_bps: Mapped[int] = mapped_column(Integer, default=100)  # 1% default
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    wallets: Mapped[list["Wallet"]] = relationship(back_populates="user")
+    # Referrals
+    referral_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    referred_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    referral_balance_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=0)  # unclaimed, available now
+    referral_earned_total_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=0)  # lifetime, never decreases
+    referral_claimed_total_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=0)  # lifetime, paid out
+
+    wallets: Mapped[list["Wallet"]] = relationship(back_populates="user", foreign_keys="Wallet.user_id")
     trades: Mapped[list["Trade"]] = relationship(back_populates="user")
 
 
@@ -79,6 +86,8 @@ class FeeConfig(Base):
     max_trade_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=0)  # 0 = no cap
     max_daily_volume_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=0)
     large_trade_confirm_threshold_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=1000)
+    referral_share_bps: Mapped[int] = mapped_column(Integer, default=1000)  # 1000 = 10% of the fee -> referrer
+    referral_min_claim_ton: Mapped[float] = mapped_column(Numeric(38, 9), default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_by_admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
@@ -97,6 +106,23 @@ class DepositSnapshot(Base):
     symbol: Mapped[str] = mapped_column(String(32), default="TON")
     last_balance: Mapped[float] = mapped_column(Numeric(38, 9), default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ClaimRequest(Base):
+    """A user's request to withdraw their referral balance. Admin approves or declines
+    it by hand (per the spec: claims are not paid out automatically)."""
+    __tablename__ = "claim_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    amount_ton: Mapped[float] = mapped_column(Numeric(38, 9))
+    payout_address: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|approved|declined
+    admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AdminAuditLog(Base):
@@ -130,5 +156,30 @@ async def init_db():
                 max_trade_ton=config.MAX_TRADE_TON,
                 max_daily_volume_ton=config.MAX_DAILY_VOLUME_TON,
                 large_trade_confirm_threshold_ton=config.LARGE_TRADE_CONFIRM_THRESHOLD_TON,
+                referral_share_bps=config.REFERRAL_SHARE_BPS,
+                referral_min_claim_ton=config.REFERRAL_MIN_CLAIM_TON,
             ))
             await session.commit()
+
+    # backfill referral_code for any users created before this column existed
+    async with async_session() as session:
+        from sqlalchemy import select
+        result = await session.execute(select(User).where(User.referral_code.is_(None)))
+        missing = result.scalars().all()
+        if missing:
+            existing = set((await session.execute(select(User.referral_code))).scalars().all())
+            for user in missing:
+                user.referral_code = _generate_unique_code(existing)
+                existing.add(user.referral_code)
+            await session.commit()
+
+
+def _generate_unique_code(existing: set[str], length: int = 8) -> str:
+    import secrets
+    import string
+    alphabet = string.ascii_uppercase + string.digits
+    for _ in range(50):
+        code = "".join(secrets.choice(alphabet) for _ in range(length))
+        if code not in existing:
+            return code
+    raise RuntimeError("could not generate a unique referral code")
