@@ -30,8 +30,7 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_SWAP)],
-            [KeyboardButton(text=MENU_SETTINGS), KeyboardButton(text=MENU_DEPOSIT)],
-            [KeyboardButton(text=MENU_REFERRAL)],
+            [KeyboardButton(text=MENU_SETTINGS), KeyboardButton(text=MENU_REFERRAL)],
         ],
         resize_keyboard=True,
         is_persistent=True,

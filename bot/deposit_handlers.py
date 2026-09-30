@@ -39,6 +39,17 @@ async def send_deposit(event):
     await event.answer(_deposit_text(wallet.address), reply_markup=_deposit_screen_kb())
 
 
+@router.callback_query(F.data == "dep:open")
+async def open_deposit_from_button(callback: CallbackQuery):
+    """Reached from the 📥 Deposit button on the Balance screen — edits in place
+    instead of sending a new message, since it's a callback, not a menu tap."""
+    wallet = await require_wallet(callback)
+    if not wallet:
+        return
+    await callback.answer()
+    await edit(callback.message, _deposit_text(wallet.address), _deposit_screen_kb())
+
+
 @router.callback_query(F.data == "dep:check")
 async def check_deposit(callback: CallbackQuery):
     wallet = await require_wallet(callback)

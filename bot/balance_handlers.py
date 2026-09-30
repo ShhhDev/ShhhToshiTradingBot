@@ -3,6 +3,7 @@ import logging
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+import deposit_handlers
 import ton_client
 from helpers import (
     edit, esc, fmt_amount, fmt_usd, is_admin, require_wallet,
@@ -66,7 +67,10 @@ async def build_balance(wallet) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton(text=f"🪙 {h['symbol'][:14]}", callback_data=f"tk:{h['contract']}")
             for h in shown[i:i + 2]
         ])
-    rows.append([InlineKeyboardButton(text="🔄 Refresh", callback_data="bal:refresh")])
+    rows.append([
+        InlineKeyboardButton(text="📥 Deposit", callback_data="dep:open"),
+        InlineKeyboardButton(text="🔄 Refresh", callback_data="bal:refresh"),
+    ])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
