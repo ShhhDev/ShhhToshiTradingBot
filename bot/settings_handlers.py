@@ -57,6 +57,7 @@ async def build_settings(tg_user) -> tuple[str, InlineKeyboardMarkup]:
         ],
         [InlineKeyboardButton(text="🔑 View Seed Phrase", callback_data=f"set:seed:{wallet.id}")],
         slip_row,
+        [InlineKeyboardButton(text="🏠 Home", callback_data="menu:home")],
     ])
     return text, kb
 

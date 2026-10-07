@@ -30,6 +30,10 @@ class Config:
         "DEV_FEE_WALLET", "UQALrB2fpRmfx3HWpmzPz3zfNsAiJNpP0-4J6ENptLel_e7w"
     )
 
+    # Master switch for on-chain swaps (manual, limit orders, copy trades, snipes). Off until you've
+    # done a tiny real swap and are happy: set DEX_LIVE=true.
+    DEX_LIVE = os.getenv("DEX_LIVE", "false").strip().lower() in ("1", "true", "yes", "on")
+
     DEX_PROVIDER = os.getenv("DEX_PROVIDER", "stonfi")
     STONFI_API_URL = os.getenv("STONFI_API_URL", "https://api.ston.fi")
     DEDUST_API_URL = os.getenv("DEDUST_API_URL", "https://api.dedust.io")

@@ -24,6 +24,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 
 import addr_utils
 import dex
+import executor
 import fees
 import ton_client
 from config import config
@@ -577,23 +578,18 @@ async def _execute_trade(callback: CallbackQuery, data: dict):
         await edit(callback.message, "❌ Your balance changed and it no longer covers this trade. Nothing was sent.")
         return
 
-    fee_amount, net = fees.calculate_fee(amount, fc.fee_bps)
     user = await get_or_create_user(callback.from_user)
     await edit(callback.message, "⏳ Processing your swap…")
 
     try:
-        quote = await dex.get_quote(
-            token_in=from_token, token_out=to_token, amount_in=net, slippage_bps=user.slippage_bps,
+        trade = await executor.run_swap(user, wallet, from_token, to_token, amount)
+        await edit(
+            callback.message,
+            f"✅ <b>Swap complete</b>\n\nSent {fmt_amount(amount, 6)} · fee {fmt_pct_bps(trade.fee_bps_applied)}\n"
+            f"Tx: <code>{esc(trade.tx_hash or '—')}</code>",
         )
-        # When dex.py is wired: decrypt the wallet's mnemonic here
-        # (encryption.decrypt_mnemonic), call dex.execute_swap(mnemonic, quote), send `fee_amount`
-        # to fc.dev_wallet, record a Trade row, then show the result with its tx hash.
-        #
-        # Once the fee transfer above actually succeeds on-chain, credit the referrer's
-        # share of it (does nothing if this trader has no referrer):
-        #   from referral_handlers import award_referral_credit
-        #   await award_referral_credit(fee_amount, callback.from_user.id)
-        raise NotImplementedError  # not reached until the block above is implemented
+    except executor.TradeError as e:
+        await edit(callback.message, f"❌ {esc(e)}")
     except NotImplementedError:
         await edit(
             callback.message,

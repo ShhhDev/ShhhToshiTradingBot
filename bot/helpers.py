@@ -18,20 +18,26 @@ logger = logging.getLogger(__name__)
 
 # ---- persistent bottom menu (reply keyboard) --------------------------------
 
+MENU_HOME = "🏠 Menu"
 MENU_BALANCE = "💰 Balance"
 MENU_SWAP = "🔁 Swap"
 MENU_SETTINGS = "⚙️ Settings"
 MENU_DEPOSIT = "📥 Deposit"
 MENU_REFERRAL = "🎁 Referral"
-MENU_TEXTS = {MENU_BALANCE, MENU_SWAP, MENU_SETTINGS, MENU_DEPOSIT, MENU_REFERRAL}
+MENU_POSITIONS = "📍 Positions"
+MENU_TRANSFER = "↗️ Transfer"
+MENU_EXPLORE = "🔍 Explore"
+MENU_COPY = "📸 Copy Trade"
+MENU_SNIPES = "🎯 Snipes"
+MENU_LIMIT = "🗒 Limit Orders"
+MENU_TEXTS = {MENU_HOME, MENU_BALANCE, MENU_SWAP, MENU_SETTINGS, MENU_DEPOSIT, MENU_REFERRAL,
+              MENU_POSITIONS, MENU_TRANSFER, MENU_EXPLORE, MENU_COPY, MENU_SNIPES, MENU_LIMIT}
 
 
 def main_reply_kb() -> ReplyKeyboardMarkup:
+    """One persistent 'Menu' button (like the bot menu button) that always reopens the dashboard."""
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=MENU_BALANCE), KeyboardButton(text=MENU_SWAP)],
-            [KeyboardButton(text=MENU_SETTINGS), KeyboardButton(text=MENU_REFERRAL)],
-        ],
+        keyboard=[[KeyboardButton(text=MENU_HOME)]],
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Paste a token address to trade…",

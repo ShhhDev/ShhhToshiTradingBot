@@ -107,7 +107,7 @@ async def build_referral_screen(bot, tg_user) -> tuple[str, InlineKeyboardMarkup
         f"✅ Lifetime claimed: {fmt_amount(float(user.referral_claimed_total_ton), 4)} TON\n"
     )
 
-    rows = [[InlineKeyboardButton(text="🔄 Refresh", callback_data="ref:refresh")]]
+    rows = [[InlineKeyboardButton(text="🔄 Refresh", callback_data="ref:refresh"), InlineKeyboardButton(text="🏠 Home", callback_data="menu:home")]]
     if pending:
         text += (
             f"\n⏳ <i>You have a pending claim for {fmt_amount(float(pending.amount_ton), 4)} TON "

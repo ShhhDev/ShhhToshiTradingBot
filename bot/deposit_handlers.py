@@ -16,6 +16,7 @@ router = Router()
 def _deposit_screen_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Check Deposit", callback_data="dep:check")],
+        [InlineKeyboardButton(text="🏠 Home", callback_data="menu:home")],
     ])
 
 

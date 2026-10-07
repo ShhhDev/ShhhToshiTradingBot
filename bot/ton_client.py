@@ -10,12 +10,16 @@ readable message instead of failing silently.
 """
 
 import asyncio
+import base64
 import logging
 import time
 
 import httpx
 from tonsdk.contract.wallet import Wallets, WalletVersionEnum
+from tonsdk.boc import Cell
 from tonsdk.crypto import mnemonic_new
+from tonsdk.utils import bytes_to_b64str, to_nano, Address
+from tonsdk.contract.token.ft import JettonWallet
 
 import addr_utils
 from config import config
@@ -252,3 +256,135 @@ async def get_token_market_data(contract_address: str) -> dict | None:
         pass  # DexScreener down / token not indexed yet - leave market fields as None
 
     return {**meta, **market}
+
+
+# ----------------------------------------------------------------------------
+# Sending (used by Transfer, fee collection, and the trade executor)
+# NOTE: written against the tonsdk / tonapi docs but NOT yet run against mainnet - test on
+# testnet (TON_NETWORK=testnet) with a few cents before trusting it with real funds.
+# ----------------------------------------------------------------------------
+
+async def _tonapi_post(path: str, body: dict) -> dict | None:
+    headers = {"Authorization": f"Bearer {config.TON_API_KEY}"} if config.TON_API_KEY else {}
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            r = await client.post(f"{TONAPI_BASE}{path}", headers=headers, json=body)
+        except httpx.HTTPError as e:
+            raise TonApiError(f"network error: {type(e).__name__}") from e
+    if r.status_code >= 400:
+        raise TonApiError(f"TonAPI rejected the transaction (HTTP {r.status_code}): {r.text[:200]}")
+    try:
+        return r.json()
+    except ValueError:
+        return None
+
+
+async def get_seqno(address: str) -> int:
+    data = await _tonapi_get(f"/wallet/{address}/seqno")
+    return int((data or {}).get("seqno", 0))
+
+
+async def wait_for_seqno(address: str, previous: int, timeout: int = 60) -> bool:
+    """Waits until the wallet's previous outgoing message has landed (seqno moved past `previous`)."""
+    for _ in range(timeout // 3):
+        try:
+            if await get_seqno(address) > previous:
+                return True
+        except TonApiError:
+            pass
+        await asyncio.sleep(3)
+    return False
+
+
+def _wallet_from_mnemonic(mnemonic: str):
+    _, _, _, wallet = Wallets.from_mnemonics(mnemonic.split(), WalletVersionEnum.v4r2, 0)
+    return wallet
+
+
+async def _send_message(mnemonic: str, to_address: str, amount_ton: float, payload=None,
+                        amount_nano: int | None = None) -> str:
+    wallet = _wallet_from_mnemonic(mnemonic)
+    own = wallet.address.to_string(is_user_friendly=True, is_bounceable=False)
+    seqno = await get_seqno(own)
+    nano = amount_nano if amount_nano is not None else to_nano(amount_ton, "ton")
+    query = wallet.create_transfer_message(to_address, nano, seqno, payload=payload)
+    boc = bytes_to_b64str(query["message"].to_boc(False))
+    await _tonapi_post("/blockchain/message", {"boc": boc})
+    await wait_for_seqno(own, seqno)
+    cell = query["message"]
+    return cell.bytes_hash().hex() if hasattr(cell, "bytes_hash") else ""
+
+
+async def send_ton(mnemonic: str, to_address: str, amount_ton: float, comment: str | None = None) -> str:
+    """Plain TON transfer. Returns the external message hash."""
+    return await _send_message(mnemonic, to_address, amount_ton, payload=comment or None)
+
+
+async def send_raw(mnemonic: str, to_address: str, value_nano: int, body_b64: str | None) -> str:
+    """Sends a prebuilt message (e.g. a DEX router swap) given its value in nanoTON and base64 body BOC."""
+    body = Cell.one_from_boc(base64.b64decode(body_b64)) if body_b64 else None
+    return await _send_message(mnemonic, to_address, 0, payload=body, amount_nano=value_nano)
+
+
+async def get_jetton_wallet_address(owner: str, jetton: str) -> str | None:
+    data = await _tonapi_get(f"/accounts/{owner}/jettons/{addr_utils.canonical(jetton)}")
+    return ((data or {}).get("wallet_address") or {}).get("address")
+
+
+async def send_jetton(mnemonic: str, owner: str, jetton: str, to_address: str, amount: float,
+                      comment: str | None = None) -> str:
+    """Jetton transfer from `owner` (the sending wallet) to `to_address`. ~0.05 TON of gas is attached."""
+    meta = await get_token_metadata(jetton)
+    if meta is None:
+        raise TonApiError("Unknown jetton.")
+    jw_addr = await get_jetton_wallet_address(owner, jetton)
+    if not jw_addr:
+        raise TonApiError("Couldn't find your wallet for that token.")
+    body = JettonWallet().create_transfer_body(
+        Address(to_address),
+        int(round(amount * 10 ** meta["decimals"])),
+        forward_amount=1,
+        response_address=Address(owner),
+    )
+    return await _send_message(mnemonic, jw_addr, 0.05, payload=body)
+
+
+# ----------------------------------------------------------------------------
+# Feeds for Explore / Copy Trade / Snipes
+# ----------------------------------------------------------------------------
+
+async def get_account_events(address: str, limit: int = 20) -> list[dict]:
+    data = await _tonapi_get(f"/accounts/{address}/events", params={"limit": limit})
+    return (data or {}).get("events", [])
+
+
+async def get_trending(limit: int = 10) -> list[dict]:
+    """Trending TON pools from GeckoTerminal: [{symbol, name, contract, price_usd, change_24h, volume_24h}]."""
+    out = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.geckoterminal.com/api/v2/networks/ton/trending_pools",
+                headers={"Accept": "application/json;version=20230302"},
+                params={"include": "base_token"},
+            )
+            if r.status_code != 200:
+                return []
+            for pool in r.json().get("data", []):
+                attrs = pool.get("attributes") or {}
+                base_id = (((pool.get("relationships") or {}).get("base_token") or {}).get("data") or {}).get("id", "")
+                contract = addr_utils.canonical(base_id.split("_", 1)[-1])
+                if not addr_utils.is_valid(contract):
+                    continue
+                out.append({
+                    "symbol": (attrs.get("name") or "?").split(" / ")[0],
+                    "contract": contract,
+                    "price_usd": float(attrs["base_token_price_usd"]) if attrs.get("base_token_price_usd") else None,
+                    "change_24h": ((attrs.get("price_change_percentage") or {}).get("h24")),
+                    "volume_24h": ((attrs.get("volume_usd") or {}).get("h24")),
+                })
+                if len(out) >= limit:
+                    break
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return []
+    return out

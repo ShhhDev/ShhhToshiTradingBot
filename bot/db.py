@@ -135,6 +135,58 @@ class AdminAuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class LimitOrder(Base):
+    """Buy when price <= trigger, sell when price >= trigger. Amount is TON (buy) or token units (sell)."""
+    __tablename__ = "limit_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    token: Mapped[str] = mapped_column(String(128))
+    symbol: Mapped[str] = mapped_column(String(32), default="?")
+    side: Mapped[str] = mapped_column(String(8))  # buy | sell
+    trigger_price_usd: Mapped[float] = mapped_column(Numeric(38, 18))
+    amount: Mapped[float] = mapped_column(Numeric(38, 9))
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open|filling|filled|cancelled|failed
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CopyTrade(Base):
+    """Mirror a trader's STON.fi/DeDust swaps: buys use a fixed TON amount, sells close your position."""
+    __tablename__ = "copy_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    trader_address: Mapped[str] = mapped_column(String(128))
+    buy_amount_ton: Mapped[float] = mapped_column(Numeric(38, 9))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_ts: Mapped[int] = mapped_column(BigInteger, default=0)  # only events newer than this are copied
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Snipe(Base):
+    """kind='jetton': buy as soon as the token has liquidity. kind='deployer': watch a deployer
+    wallet for a new jetton, then turn into a 'jetton' snipe on it."""
+    __tablename__ = "snipes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("wallets.id"))
+    kind: Mapped[str] = mapped_column(String(16))  # jetton | deployer
+    target: Mapped[str] = mapped_column(String(128))
+    amount_ton: Mapped[float] = mapped_column(Numeric(38, 9))
+    slippage_bps: Mapped[int] = mapped_column(Integer, default=2500)
+    dexes: Mapped[str] = mapped_column(String(64), default="")  # csv of allowed dex ids, empty = any
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="watching")  # watching|done|failed|cancelled
+    last_ts: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 engine = create_async_engine(config.DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 

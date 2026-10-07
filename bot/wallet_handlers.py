@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import select
 
+import dashboard
 import encryption
 import ton_client
 from db import async_session, Wallet
@@ -14,7 +15,7 @@ from helpers import edit, esc, get_or_create_user, main_reply_kb
 logger = logging.getLogger(__name__)
 router = Router()
 
-READY_TEXT = "You're all set — use the menu below to deposit, trade and manage your wallets."
+READY_TEXT = "✅ You're all set — here's your dashboard."
 
 
 class ImportWallet(StatesGroup):
@@ -63,6 +64,7 @@ async def create_wallet_confirm(callback: CallbackQuery, state: FSMContext):
     await _persist_wallet(callback.from_user, mnemonic, address, imported=False)
     await edit(callback.message, f"✅ <b>Wallet created and secured.</b>\n\n<code>{address}</code>")
     await callback.message.answer(READY_TEXT, reply_markup=main_reply_kb())
+    await dashboard.send_dashboard(callback)
 
 
 @router.callback_query(F.data == "wallet:confirm_create")
@@ -120,12 +122,14 @@ async def import_wallet_receive(message: Message, state: FSMContext):
             f"ℹ️ That wallet is already in your account — it's now your active wallet.\n\n<code>{address}</code>",
             reply_markup=main_reply_kb(),
         )
+        await dashboard.send_dashboard(message)
     else:
         await message.answer(
             f"✅ <b>Wallet imported and secured.</b>\n\n<code>{address}</code>\n\n"
             "Your message with the phrase was deleted from this chat.",
             reply_markup=main_reply_kb(),
         )
+        await dashboard.send_dashboard(message)
 
 
 # ---- cancel ------------------------------------------------------------------

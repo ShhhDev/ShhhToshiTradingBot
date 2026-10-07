@@ -18,6 +18,11 @@ import settings_handlers
 import trade_handlers
 import referral_handlers
 import admin_handlers
+import dashboard
+import auto_handlers
+import market_handlers
+import transfer_handlers
+import workers
 from deposit_watcher import run_deposit_watcher
 from helpers import esc, is_admin
 
@@ -68,6 +73,10 @@ async def main():
     dp.include_router(deposit_handlers.router)
     dp.include_router(settings_handlers.router)
     dp.include_router(trade_handlers.router)
+    dp.include_router(transfer_handlers.router)
+    dp.include_router(market_handlers.router)
+    dp.include_router(auto_handlers.router)
+    dp.include_router(dashboard.router)
     dp.include_router(referral_handlers.router)
     dp.include_router(admin_handlers.router)
 
@@ -82,10 +91,13 @@ async def main():
         logger.warning(f"could not set bot commands: {e}")
 
     watcher_task = asyncio.create_task(run_deposit_watcher(bot))
+    worker_tasks = workers.start_workers(bot)
     try:
         await dp.start_polling(bot)
     finally:
         watcher_task.cancel()
+        for t in worker_tasks:
+            t.cancel()
 
 
 if __name__ == "__main__":

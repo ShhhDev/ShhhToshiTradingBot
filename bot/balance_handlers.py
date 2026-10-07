@@ -71,6 +71,7 @@ async def build_balance(wallet) -> tuple[str, InlineKeyboardMarkup]:
         InlineKeyboardButton(text="📥 Deposit", callback_data="dep:open"),
         InlineKeyboardButton(text="🔄 Refresh", callback_data="bal:refresh"),
     ])
+    rows.append([InlineKeyboardButton(text="🏠 Home", callback_data="menu:home")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
