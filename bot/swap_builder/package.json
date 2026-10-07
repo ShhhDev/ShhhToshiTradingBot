@@ -1,0 +1,12 @@
+{
+  "name": "shhhtoshi-swap-builder",
+  "private": true,
+  "type": "module",
+  "description": "Builds STON.fi swap messages with the official SDK. The Python bot signs and sends them.",
+  "dependencies": {
+    "@ston-fi/api": "latest",
+    "@ston-fi/sdk": "latest",
+    "@ton/core": "latest",
+    "@ton/ton": "latest"
+  }
+}
